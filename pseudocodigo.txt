@@ -1,0 +1,52 @@
+  
+
+  bk = 106  													# train_set : 2020 - 53 wks ; 2021 - 52 wks ; test_set :  2022 - 45 wks
+  unq_wks = unique(MSFT[total_weeks]) 		 					# wk 1, wk 2, ..., wk 150 ; absolute number of weeks
+  dt_day_errors = DataFrame(nrow = 0, ncol = 5) 				# final data frame
+
+start_time = SystemTime() 			 							# measure time of fitting and debugging
+
+while (bk < length(unq_wks)+1) { 		 						# while its easier for debugging
+ 
+  train_set = subset(MSFT, total_weeks < bk)   					# TRAIN SET 2020 & 2021
+  test_set =  subset(MSFT, total_weeks == bk) 					# TEST SET THE NEXT WEEK 2022 YEAR UNTIL PRESENT WEEK
+  bk = bk+1														# increment the week counter 
+ 
+  fit = fit_model_method(train_set[returns])   					### model FIT code	   ###
+  pred = prediction(fit, n_of_rows(test_set) ) 					### model predict code ###
+
+  test_set[model_pred] = numeric(pred[mean])     				# take the model predict
+
+  days = LIST() 												# days in the week been predicted
+  day_error = LIST()											# day-error in the week been predicted
+  
+  for j in 1:nrow(test_set) :
+    day_error = LIST(day_error,test_set[j,8]-test_set[j,1])  	# compute the errors of each day
+ 
+  
+  test_set$day_error = day_error  								# insert the pred in test set (debugging)
+  total_days = LIST(2,3,4,5,6)									# each day in a normal week
+  day_error_correct = LIST()									# pred week existing days - final week pred
+  
+  for k in 1:5 :
+    day_line = subset(test_set, week_day == total_days[k])  	# subset by day, 1 row if exists 0 if not
+    if(nrow(day_line) < 1)				  						# if day doesnt exist compute NA
+      day_error_correct[k] = NA
+    else						  								# if day exist compute teh errors
+      day_error_correct[k] = day_line[1,9]		  				# the error column in test_set by index
+    
+    dt_day_errors = combine_rows(dt_day_errors, day_error_correct)  	# increment the final data with the current week
+}
+  End_time = Sys.time()											# debug the end time
+  Total = as.numeric(End_time - start_time) 					# total time of fitting SECS
+  
+  column_names(dt_day_errors) = LIST('Seg','Ter','Qua','Qui','Sex')
+  
+  day_rmse = apply(dt_day_errors, sqrt(mean(x^2, remove.NAs = True))) 	# apply the RMSE function (apply it by hand its easier for debugging)
+  model_name = "your_model_name"
+  
+  # WRITE the results of RMSE and the predictions of the model in .csv files
+  
+  write_in_csv(dt_day_errors, file = paste0("day_errors_model_", model_name,".csv"), hide_row_names = True )  # data frame
+  write_in_csv(day_rmse, file = paste0("day_RMSE_model_", model_name,".csv"), hide_row_names = True )  	 	  # List
+  

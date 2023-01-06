@@ -1,0 +1,508 @@
+---
+title: "TG II Igor Freitas"
+output:
+  pdf_document: default
+  html_document: default
+date: "2022-11-08"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+#.
+#.
+# *********  Acessar arquivos com modelos de materias anteriores no R **********
+#.
+#.
+## Essa e a analise dos dados historicos dos retornos das acoes da Microsoft Corp.
+##.
+## Serao utilizados os modelos ARIMA, Exp. Smoothing, Neural net e xgboost.
+## Estes modelos serao utilizados para a previsao dos retorno da acao 
+## analisando dados de 2020, 2021 e 2022, sendo os dois primeiros anos
+## o conjunto de treino e o ano corrente como teste/validacao
+## a intencao e prever os valores da proxima semana e calcular o erro.
+## Os erros de cada modelo serao computados por dia da semana
+## sendo o dia uma variavel de cada semana preditiva e a media da semana 
+## como indicador global da previsao.
+## Um algoritmo foi construido para extracao destes dados e nele o conjunto de 
+## teste e iterado por semana do ano de 2022, dessa forma a analise dos dados
+## considera os dados ate a sexta feira da ultima semana e em semana com feriado
+## faz a previsao apenas para os dias uteis e computa NA para o dia sem dados.
+
+
+## Bibliotecas utilizadas - Retira as que nao usou e pega as funcoes de cada pro texto
+```{r Library}
+
+library(quantmod) # v 
+library(dplyr) # v 
+library(tidyr)
+library(lubridate) # v 
+library(forecast) # v 
+library(forecastxgb) # v
+library(xts)
+library(tseries) # v
+library(timeSeries)
+library(magrittr)
+library(nnfor) # v 
+library(xgboost) # v 
+library(TTR)
+library(caret)
+library(readr)
+library(readxl)
+# library(xlsx)
+
+library(tidyverse)
+library(fpp2) #v 
+library(ggplot2)
+library(e1071)
+library(bayesforecast) # v
+
+```
+## Dados e feat eng V
+```{r data}
+
+## De 01.01.2020 ate 18.11.2022 (HOJE)
+
+
+# plot(MSFT$MSFT.Adjusted)
+getSymbols("MSFT", src = "yahoo", from = as.Date("2022-5-1"), #Year-Month-Day
+                     to = as.Date("2022-11-12"), periodicity = "daily")
+chartSeries(MSFT, type = "auto",  theme = chartTheme('white'), minor.ticks = FALSE)
+
+getSymbols("MSFT", src = "yahoo", from = as.Date("2020-1-1"), #Year-Month-Day
+                     to = as.Date("2022-11-12"), periodicity = "daily")
+
+retrn <- dailyReturn(Cl(MSFT), type=c("arithmetic","log")[1])
+MSFT  <- as.data.frame(retrn)
+names(MSFT) <- "retornos"
+MSFT$Date   <- as.Date( rownames(MSFT) )
+ 
+# Dia da semana
+MSFT$wday   <- wday(MSFT$Date) # Como numero
+MSFT$wdayname   <- wday(MSFT$Date, label = TRUE, abbr=TRUE)
+MSFT$month_day   <- day(MSFT$Date)
+  
+#num da semana
+MSFT$week   <- format(MSFT$Date, "%W")
+
+week <- 0
+#days in week
+weeks_total <- c()
+
+for (i in 1:length(MSFT$week)) {
+  x <- as.numeric(MSFT[i,6])
+  ano <- format(MSFT[i,2], "%Y")
+    if (ano == 2020){
+       weeks_total <- c(weeks_total,x+1)
+    }
+    else if (ano == 2021){
+       weeks_total <- c(weeks_total,x+53)
+    }
+    else
+      {
+       weeks_total <- c(weeks_total,x+105)
+    }
+}
+
+MSFT$wk_total <- weeks_total
+
+MSFTforecast <- subset(MSFT, wk_total == 151)
+MSFT <- subset(MSFT, wk_total != 151)
+
+write.csv(MSFT, file = "MSFT.csv", row.names = FALSE)
+write.csv(MSFTforecast, file = "MSFT_forecast.csv", row.names = FALSE)
+
+
+# plot(MSFT$Date,MSFT$retornos, type = 'line')
+
+# Agora com os dados organizados em um dataframe que contem : 
+# 
+#          Retornos   Date   Wday   wdayname    month_day    week    wk_total
+#  1
+#  2
+#  .
+#  .
+#  .
+# n days
+#
+#
+```
+##.
+# Auto Regressive Integrated Moving Average (ARIMA) - ajuste V
+##.
+##.
+```{r ARIMA}
+  #
+  # 17.11.2022 - 10h46 - last run
+  
+  unq_wks <- unique(MSFT$wk_total)
+  bk <- 106  #with 104 weeks(2 YEARS) predict 105 and test, with 105 weeks predict 106 and test ....
+  errors <- c()
+  dt_day_errors <- as.data.frame(matrix(nrow = 0,ncol = 5))
+
+start_time <- Sys.time()
+while (bk < length(unq_wks)+1) {
+  #
+  #
+  train_set <- subset(MSFT,wk_total < bk)   #TRAIN SET 2020 & 2021
+  test_set <-  subset(MSFT,wk_total == bk)  #TEST SET THE NEXT WEEK 2022 YEAR UNTIL PRESENT    WEEK
+  bk <- bk+1
+  #
+  # Preve os proximos n dias existentes na semana seguinte baseado em dados 
+  # que vao até a semana anterior e gera um dataframe resposta
+  #  
+  fit <- auto.arima(train_set$retornos)   ### model ARIMA ###
+  pred <- forecast(fit, h= nrow(test_set) )  ### predict ###
+
+  test_set$model_pred <- as.numeric(pred$mean)
+
+  days <- c()
+  day_error <- c()
+  
+  for (j in 1:nrow(test_set)) {
+      day_error <- c(day_error,test_set[j,8]-test_set[j,1])
+  }
+  
+  test_set$day_error <- day_error
+  total_days <- c(2,3,4,5,6)
+  day_error_correct <- c()
+  
+  for(k in 1:5){
+    day_line <- subset(test_set, wday == total_days[k])
+    if(nrow(day_line) < 1){
+      day_error_correct[k] <- NA
+    }else{
+      day_error_correct[k] <- day_line[1,9]
+    }
+  }
+     #day_error_correct <- c(day_error_correct, mean(day_error))
+     dt_day_errors <- rbind(dt_day_errors,day_error_correct)
+}
+  End_time <- Sys.time()
+  Total <- as.numeric(End_time - start_time) # SECS
+ # start_time <- 0
+ # End_time <- 0 
+  
+  colnames(dt_day_errors) <- c('Seg','Ter','Qua','Qui','Sex')
+  
+  # eh isso aqui que eu preciso de todos modelos
+  day_rmse <- apply(dt_day_errors, 2, function(x) sqrt(mean(x^2, na.rm = TRUE))) # SQRT DO ERRO ( DESVIO DO ERRO)
+  model_name <- "ARIMA"
+  write.csv(dt_day_errors, file = paste0("day_errors_model_", model_name,".csv"), row.names = FALSE)
+  write.csv(day_rmse, file = paste0("day_RMSE_model_", model_name,".csv"), row.names = FALSE)
+  
+  finalfit <- auto.arima(MSFT$retornos)
+  forecasted <- forecast(finalfit, h= 5 )
+  MSFTforecast <- forecasted$mean
+  
+  write.csv(MSFTforecast, file = paste0("forecast_", model_name,".csv"), row.names = FALSE)
+
+```
+##.
+## Suav. Exponencial - ajuste V
+##.
+##.
+```{r ExpSmth}
+  #
+  # 17.11.2022 - 10h47 - last run
+# pre ajuste do modelo - melhor alpha que minimiza o RMSE
+ 
+  SES <- ses(ts_of_msft, alpha = .1, h = nrow(test_set), frequency = 1)
+  accuracy(SES, test_set$retornos)
+
+  alpha <- seq(.01, .99, by = .01)
+  RMSE <- NA
+  
+  for(i in seq_along(alpha)) {
+  
+  fit <- ses(ts_of_msft, alpha = alpha[i], h = length(ts_of_msft_test))
+  RMSE[i] <- accuracy(fit, test_set$retornos)[2,2]
+  
+  }
+
+  alpha.fit <- data_frame(alpha, RMSE)
+  alpha_min <- subset(alpha.fit, RMSE == min(RMSE)) ## = 0.99, ta certo ficar no extremo ?
+  min_rmse_alpha <- as.numeric(alpha_min[1,1])
+
+## FIT ##
+  
+  unq_wks <- unique(MSFT$wk_total)
+  bk <- 106  #with 104 weeks(2 YEARS) predict 105 and test, with 105 weeks predict 106 and test ....
+  errors <- c()
+  dt_day_errors <- as.data.frame(matrix(nrow = 0,ncol = 5))
+  
+start_time <- Sys.time()
+while (bk < length(unq_wks)+1) {
+  #
+  #
+  train_set <- subset(MSFT,wk_total < bk)   #TRAIN SET 2020 & 2021
+  test_set <-  subset(MSFT,wk_total == bk)  #TEST SET THE NEXT WEEK 2022 YEAR UNTIL PRESENT WEEK
+  bk <- bk+1
+  #
+  ts_of_msft <- ts(train_set$retornos)
+
+  fit <- ses(ts_of_msft, alpha = min_rmse_alpha, h = nrow(test_set)) ### model Exp. Smo. ###
+  # accuracy(fit, test_set$retornos)
+  
+  # Preve os proximos n dias existentes na semana seguinte baseado em dados 
+  # que vao até a semana anterior e gera um dataframe resposta
+  #  
+  pred <- forecast(fit, h = nrow(test_set))
+  # pred$mean
+  test_set$model_pred <- as.numeric(pred$mean) ### como vou fazer isso, o modelo me da apenas uma media?
+
+  days <- c()
+  day_error <- c()
+  
+  for (j in 1:nrow(test_set)) {
+      day_error <- c(day_error,test_set[j,8]-test_set[j,1])
+  }
+  
+  test_set$day_error <- day_error
+  total_days <- c(2,3,4,5,6)
+  day_error_correct <- c()
+  
+  for(k in 1:5){
+    day_line <- subset(test_set, wday == total_days[k])
+    if(nrow(day_line) < 1){
+      day_error_correct[k] <- NA
+    }else{
+      day_error_correct[k] <- day_line[1,9]
+    }
+  }
+     #day_error_correct <- c(day_error_correct, mean(day_error))
+     dt_day_errors <- rbind(dt_day_errors,day_error_correct)
+}
+  End_time <- Sys.time()
+  Total <- as.numeric(End_time - start_time) # SECS
+  start_time <- 0
+  End_time <- 0 
+  
+  colnames(dt_day_errors) <- c('Seg','Ter','Qua','Qui','Sex')
+  
+  # eh isso aqui que eu preciso de todos modelos
+  day_rmse <- apply(dt_day_errors, 2, function(x) sqrt(mean(x^2, na.rm = TRUE))) # SQRT DO ERRO ( DESVIO DO ERRO)
+  model_name <- "exp_smoth"
+  write.csv(dt_day_errors, file = paste0("day_errors_model_", model_name,".csv"), row.names = FALSE)
+  write.csv(day_rmse, file = paste0("day_RMSE_model_", model_name,".csv"), row.names = FALSE)
+  Total
+  
+```
+##.
+## Extreme Gradient Boosting - ajuste V
+##. 
+##.
+```{r xgboost}
+ #
+   # 17.11.2022 - 10h48 - last run
+# https://www.kaggle.com/code/robikscube/tutorial-time-series-forecasting-with-xgboost - python
+
+# http://datasideoflife.com/?p=1009
+
+  unq_wks <- unique(MSFT$wk_total)
+  bk <- 106  #with 104 weeks(2 YEARS) predict 105 and test, with 105 weeks predict 106 and test ....
+  errors <- c()
+  dt_day_errors <- as.data.frame(matrix(nrow = 0,ncol = 5))
+
+start_time <- Sys.time()
+while (bk < length(unq_wks)+1) {
+  #
+  #
+  train_set <- subset(MSFT,wk_total < bk)   #TRAIN SET 2020 & 2021
+  test_set <-  subset(MSFT,wk_total == bk)  #TEST SET THE NEXT WEEK 2022 YEAR UNTIL PRESENT WEEK
+  bk <- bk+1
+  #
+  ts_of_msft <- ts(train_set$retornos)
+  #
+  # Preve os proximos n dias existentes na semana seguinte baseado em dados 
+  # que vao até a semana anterior e gera um dataframe resposta
+  #  
+  fit <- xgbar(ts_of_msft)  ### model XGBoost ###
+  pred <- forecast(fit, h= nrow(test_set) )  ### predict ###
+
+  test_set$model_pred <- as.numeric(pred$mean)
+
+  days <- c()
+  day_error <- c()
+  
+  for (j in 1:nrow(test_set)) {
+      day_error <- c(day_error,test_set[j,8]-test_set[j,1])
+  }
+  
+  test_set$day_error <- day_error
+  total_days <- c(2,3,4,5,6)
+  day_error_correct <- c()
+  
+  for(k in 1:5){
+    day_line <- subset(test_set, wday == total_days[k])
+    if(nrow(day_line) < 1){
+      day_error_correct[k] <- NA
+    }else{
+      day_error_correct[k] <- day_line[1,9] # coluna day error
+    }
+  }
+     #day_error_correct <- c(day_error_correct, mean(day_error))
+     dt_day_errors <- rbind(dt_day_errors,day_error_correct)
+}
+  End_time <- Sys.time()
+  Total <- as.numeric(End_time - start_time) # SECS
+  start_time <- 0
+  End_time <- 0 
+  
+  colnames(dt_day_errors) <- c('Seg','Ter','Qua','Qui','Sex')
+  
+  # eh isso aqui que eu preciso de todos modelos
+  day_rmse <- apply(dt_day_errors, 2, function(x) sqrt(mean(x^2, na.rm = TRUE))) # SQRT DO ERRO ( DESVIO DO ERRO)
+  model_name <- "xgboost"
+  write.csv(dt_day_errors, file = paste0("day_errors_model_", model_name,".csv"), row.names = FALSE)
+  write.csv(day_rmse, file = paste0("day_RMSE_model_", model_name,".csv"), row.names = FALSE)  
+  
+  MSFT_series <- ts(MSFT$retornos)
+  summary(fit)
+  finalfit <- xgbar(MSFT_series)
+  forecasted <- forecast(finalfit, h= 5 )
+  autoplot(forecasted)
+  MSFTforecast <- forecasted$mean
+  
+  write.csv(MSFTforecast, file = paste0("forecast_", model_name,".csv"), row.names = FALSE)
+  
+  #hist(dt_day_errors$Sex)
+
+```
+##.
+## Neural networks - ajuste V
+##.
+##.
+```{r NN}
+ #
+   # 17.11.2022 - 10h48 - last run
+## FIT ##
+  
+  unq_wks <- unique(MSFT$wk_total)
+  bk <- 106  #with 104 weeks(2 YEARS) predict 105 and test, with 105 weeks predict 106 and test ....
+  errors <- c()
+  dt_day_errors <- as.data.frame(matrix(nrow = 0,ncol = 5))
+
+start_time <- Sys.time()
+while (bk < length(unq_wks)+1) {
+  #
+  #
+  train_set <- subset(MSFT,wk_total < bk)   #TRAIN SET 2020 & 2021
+  test_set <-  subset(MSFT,wk_total == bk)  #TEST SET THE NEXT WEEK 2022 YEAR UNTIL PRESENT WEEK
+  bk <- bk+1
+  #
+  ts_of_msft <- ts(train_set$retornos)
+
+  fit <- elm(ts_of_msft, reps = 40) ### model NN ### TESTAR ELM > Extreme Learning ; GLM > Generalized Linear Models
+  pred <- forecast(fit, h= nrow(test_set) )
+  
+  #accuracy(fit, test_set$retornos)
+  
+  # Preve os proximos n dias existentes na semana seguinte baseado em dados 
+  # que vao até a semana anterior e gera um dataframe resposta
+  #  
+  # pred <- forecast(fit, h =5)
+  # pred$model
+  test_set$model_pred <- as.numeric(pred$mean) ### como vou fazer isso, o modelo me da apenas uma media?
+
+  days <- c()
+  day_error <- c()
+  
+  for (j in 1:nrow(test_set)) {
+      day_error <- c(day_error,test_set[j,8]-test_set[j,1])
+  }
+  
+  test_set$day_error <- day_error
+  total_days <- c(2,3,4,5,6)
+  day_error_correct <- c()
+  
+  for(k in 1:5){
+    day_line <- subset(test_set, wday == total_days[k])
+    if(nrow(day_line) < 1){
+      day_error_correct[k] <- NA
+    }else{
+      day_error_correct[k] <- day_line[1,9]
+    }
+  }
+     #day_error_correct <- c(day_error_correct, mean(day_error))
+     dt_day_errors <- rbind(dt_day_errors,day_error_correct)
+}
+  End_time <- Sys.time()
+  Total <- difftime(End_time, start_time, units = "mins") # SECS
+  # start_time <- 0
+  # End_time <- 0 
+  
+  colnames(dt_day_errors) <- c('Seg','Ter','Qua','Qui','Sex')
+  
+  # eh isso aqui que eu preciso de todos modelos
+  day_rmse <- apply(dt_day_errors, 2, function(x) sqrt(mean(x^2, na.rm = TRUE))) # SQRT DO ERRO ( DESVIO DO ERRO)
+  model_name <- "neuralnet"
+  write.csv(dt_day_errors, file = paste0("day_errors_model_", model_name,".csv"), row.names = FALSE)
+  write.csv(day_rmse, file = paste0("day_RMSE_model_", model_name,".csv"), row.names = FALSE)
+  Total
+  
+```
+##.
+## Naive-Bayes - ajuste V
+##.
+##.
+```{r NaiveBayes}
+
+  unq_wks <- unique(MSFT$wk_total)
+  bk <- 106  #with 104 weeks(2 YEARS) predict 105 and test, with 105 weeks predict 106 and test ....
+  errors <- c()
+  dt_day_errors <- as.data.frame(matrix(nrow = 0,ncol = 5))
+
+start_time <- Sys.time()
+while (bk < length(unq_wks)+1) {
+  #
+  #
+  train_set <- subset(MSFT,wk_total < bk)   #TRAIN SET 2020 & 2021
+  test_set <-  subset(MSFT,wk_total == bk)  #TEST SET THE NEXT WEEK 2022 YEAR UNTIL PRESENT WEEK
+  bk <- bk+1
+  #
+  ts_of_msft <- ts(train_set$retornos)
+  #
+  # Preve os proximos n dias existentes na semana seguinte baseado em dados 
+  # que vao até a semana anterior e gera um dataframe resposta
+  #  
+  fit <- stan_naive(ts_of_msft)  ### model Naive-Bayes ###
+  pred <- forecast(fit, h = nrow(test_set))  ### predict ###
+
+  test_set$model_pred <- as.numeric(pred$mean)
+
+  days <- c()
+  day_error <- c()
+  
+  for (j in 1:nrow(test_set)) {
+      day_error <- c(day_error,test_set[j,8]-test_set[j,1])
+  }
+  
+  test_set$day_error <- day_error
+  total_days <- c(2,3,4,5,6)
+  day_error_correct <- c()
+  
+  for(k in 1:5){
+    day_line <- subset(test_set, wday == total_days[k])
+    if(nrow(day_line) < 1){
+      day_error_correct[k] <- NA
+    }else{
+      day_error_correct[k] <- day_line[1,9] # coluna day error
+    }
+  }
+     #day_error_correct <- c(day_error_correct, mean(day_error))
+     dt_day_errors <- rbind(dt_day_errors,day_error_correct)
+}
+  End_time <- Sys.time()
+  Total <- Total <- difftime(End_time, start_time, units = "secs") # SECS
+  
+  colnames(dt_day_errors) <- c('Seg','Ter','Qua','Qui','Sex')
+  
+  # eh isso aqui que eu preciso de todos modelos
+  day_rmse <- apply(dt_day_errors, 2, function(x) sqrt(mean(x^2, na.rm = TRUE))) # SQRT DO ERRO ( DESVIO DO ERRO)
+  model_name <- "nvbayes"
+  write.csv(dt_day_errors, file = paste0("day_errors_model_", model_name,".csv"), row.names = FALSE)   
+  write.csv(day_rmse, file = paste0("day_RMSE_model_", model_name,".csv"), row.names = FALSE)
+  Total
+  
+```
